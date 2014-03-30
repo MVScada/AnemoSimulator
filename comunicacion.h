@@ -1,5 +1,6 @@
 
 int processInput(byte *rcv);
+boolean XBeeSend(byte *bytes, byte msize);
 
 
 byte CRC(byte *bytes, byte msize) {
@@ -22,7 +23,7 @@ void sendFrame(byte *msg, int msize) {
 
 
 void sendFrameAscii(String txt) {
-  Serial.println(txt);
+  debug.println(txt);
   delay(20);
 }
 
@@ -33,57 +34,19 @@ boolean checkCRC(byte *rcv, int last) {
     }
     
     if ( rcv[last] != crc ) {
-        texto="ERROR CRC, last="; texto+=last; sendFrameAscii(texto);
+        texto="*** ERROR CRC, last="; texto+=last; texto+=" ***";sendFrameAscii(texto);
         return FALSE;
     }
     return TRUE;
 }
 
 
-void loopReadSerial() {
-  buffer[0] = '\0';
-  counter=0;
-  /*
-  if( Serial.available() > 10 ) {
-    delay(20);
-  }
-  */
-  
-  while (Serial.available() > 0) {
-    buffer[counter] = Serial.read();
-    counter++;
-    buffer[counter] = '\0';
-    if (counter >= MAX ) {break;}
-  }
-  
-  if (counter > 0) {
-    // checkCRC
-    if ( ! checkCRC(buffer, counter-1) ) {
-        return;
-    }
-    processInput(buffer);
-  }
-}
-
-
 
 int processInput(byte *rcv) {
-    //texto="=>";
-    //texto+=buffer[0];
-    //sendFrameAscii(texto);
-    /*
-    int i=0;
-    texto="<==";
-    for(i=0; i<mcounter; i++) {
-      texto+=" ";
-      texto+=intToHex(rcv[i]);
-    }
-    sendFrameAscii(texto);
-    */
-  
+    
     if(rcv[2] == 0x31) {
       // frecuencia
-      if((int)rcv[1] == 2) {
+      if((int)rcv[1] == 3) {
         unsigned int freq;
         freq=(unsigned int)(rcv[3] *256 + rcv[4]);
         if(freq > 0 && freq < 10000) {
@@ -120,26 +83,28 @@ int processInput(byte *rcv) {
       // desactivar anemo
       emergencia(0);
       // resetear automata
-      digitalWrite(RELE2, HIGH);
-      digitalWrite(RELE3, HIGH);
-      digitalWrite(RELE4, HIGH);
-      timetoreset2=uptime+waitsecs;
-      texto="***RESET2 ";
-      texto+=waitsecs;
-      texto+=" segs*** ";
-      sendFrameAscii(texto);
+      digitalWrite(RELE2, RHIGH);
+      rele_time=uptime+waitsecs;
+      texto="*** EMERG OFF RELE2 ON ***"; sendFrameAscii(texto);
       return 4;
     }
     
     else if(rcv[2] == 0x35) {
       // frecuencia
-      unsigned int freq;
-      freq=(unsigned int)(rcv[3] *256 + rcv[4]);
-      if(freq > 0 && freq < 10000) {
-          settings.frequency=freq;
-          SetPinFrequencySafe(PWM_PIN, settings.frequency);
+      if((int)rcv[1] == 3) {
+        unsigned int freq;
+        freq=(unsigned int)(rcv[3] *256 + rcv[4]);
+        if(freq > 0 && freq < 10000) {
+            settings.frequency=freq;
+            SetPinFrequencySafe(PWM_PIN, settings.frequency);
+            texto="***CHANGE FREQ ";
+            texto+=freq;
+            texto+=" Hz*** ";
+            sendFrameAscii(texto);
+        }
+        return 5;
       }
-      return 5;
+      return 99;
     }
     
     else if(rcv[2] == 0x36) {
@@ -148,35 +113,76 @@ int processInput(byte *rcv) {
     }
     
     else if(rcv[2] == 0x37) {
+      // devuelve fecha y hora de compilacion
       texto=__DATE__; texto+=" "; texto+=__TIME__;
       sendFrameAscii(texto);
-      mserial.print(texto);
+      if (settings.enable_modem == TRUE) {
+        mserial.print(texto);
+      }
+      #if ENABLE_XBEE
+        byte message[22] = {};
+        message[0] = 0xff;
+        message[1] = 0x9d;
+        for (int i=0;i<20;i++){
+          message[i+2] = (byte)texto[i];
+        }
+        XBeeSend(message, 22);
+        
+      #endif
+      
       return 99;
     }
     
     else if(rcv[2] == 0x38) {
+      // borra la EEPROM
       resetSettings();
       return 99;
     }
     
-    else if(rcv[2] == 0x39) { // 0x39 + [ segs to wait : default 10secs ]
-      int waitsecs=10;
-      if((int)rcv[1] == 2) {
-        waitsecs=(int)rcv[3];
-      }
-      // desactivar anemo
-      emergencia(0);
-      // resetear automata
-      // 1 pulsacion larga (10 segs)
-      timetoreset1=uptime+waitsecs;
-      digitalWrite(RELE2, HIGH);
-      
-      texto="***RESET1 ";
-      texto+=waitsecs;
-      texto+=" segs*** ";
-      sendFrameAscii(texto);
+    else if(rcv[2] == 0x39) { // reiniciar
+      texto="*** REINICIANDO ***"; sendFrameAscii(texto);
+      delay(200);
+      resetFunc();
       return 9;
     }
+    
+    else if(rcv[2] == 0x40) { // 0x40 para activar/desactivar el modem
+       if((int)rcv[1] == 2) {
+         if(rcv[3] == 0x00) {
+           settings.enable_modem=FALSE;
+         }
+         else if(rcv[3] == 0x01){
+           settings.enable_modem=TRUE;
+         }
+       }
+       else {
+         settings.enable_modem = !settings.enable_modem; //Si no se le manda parametro alterna entre activado/desactivado
+       }
+       texto="Modem_enable = "; texto+=settings.enable_modem;
+       sendFrameAscii(texto);
+       saveConfig();
+       return 10;
+    }
+    
+    else if(rcv[2] == 0x41) { // Sigo vivo: Si no le llega un paquete de Sigo vivo en un tiempo determinado se reinicia el Arduino
+      iamalive=uptime+(settings.token_period*60);
+      texto="*** IAMALIVE TOKEN RECEIVED***"; sendFrameAscii(texto);
+      return 11;
+    }
+    else if(rcv[2] == 0x42) { // Cambia el tiempo en el que se reinicia sin recibir un paquete aimalive/*
+      if(rcv[1] == 2){
+        settings.token_period = rcv[3];
+        texto="*** IAMALIVE TOKEN TIME CAMBIADO A ";texto+=settings.token_period;texto+=" MINUTOS"; sendFrameAscii(texto);
+      }
+      else{
+        texto="*** IAMALIVE TOKEN TIME ES ";texto+=settings.token_period;texto+=" MINUTOS"; sendFrameAscii(texto);
+      }
+      return 12;
+    }
+    
+    
+    
+    
     
     /*
     else {
@@ -204,7 +210,8 @@ void loopReadModem() {
       if (mcounter >= MAX ) {break;}
     }
     
-    digitalWrite(13, !digitalRead(13));
+    //digitalWrite(13, !digitalRead(13));
+    //flashLed(13, 2, 50);
   
     if(mcounter > 0) {
         if ( ! checkCRC(mbuffer, mcounter-1) ) {
@@ -248,3 +255,119 @@ void loopReadModem() {
     }
   }
 }
+
+#if ENABLE_XBEE
+boolean XBeeSend(byte *bytes, byte msize) {
+    ZBTxRequest zbTx = ZBTxRequest(CoordinatorAddr64, bytes, msize);
+    ZBTxStatusResponse txStatus = ZBTxStatusResponse();
+    xbee.send(zbTx);
+    // after sending a tx request, we expect a status response
+    // wait up to half second for the status response
+    if (xbee.readPacket(500)) {
+      // got a response!
+  
+      // should be a znet tx status            	
+      if (xbee.getResponse().getApiId() == ZB_TX_STATUS_RESPONSE) {
+        xbee.getResponse().getZBTxStatusResponse(txStatus);
+  
+        // get the delivery status, the fifth byte
+        if (txStatus.getDeliveryStatus() == SUCCESS) {
+          // success.  time to celebrate
+          //flashLed(13, 5, 50);
+          //texto=" Enviado OK";
+          return TRUE;
+        } else {
+          // the remote XBee did not receive our packet. is it powered on?
+          //flashLed(13, 3, 500);
+          //texto=" No enviado";
+          return FALSE;
+        }
+      }
+    }
+    else if (xbee.getResponse().isError()) {
+      //texto="Error de envio";
+      //nss.print("Error reading packet.  Error code: ");  
+      //nss.println(xbee.getResponse().getErrorCode());
+      return FALSE;
+    }
+    else {
+      // local XBee did not provide a timely TX Status Response -- should not happen
+      //flashLed(13, 2, 50);
+      return FALSE;
+    }
+  return TRUE;
+}
+
+
+
+void loopReadXBee() {
+  xbee.readPacket();
+  if(! xbee.getResponse().isAvailable() ) {
+    return;
+  }
+
+  ZBRxResponse rx = ZBRxResponse();
+  xbee.getResponse().getZBRxResponse(rx);
+  mcounter=rx.getDataLength();
+  //texto="XBEE <== ";
+  for (int i = 0; i < mcounter; i++) {
+          //texto+=" ";
+          //texto+=intToHex(rx.getData()[i]);
+          mbuffer[i]=rx.getData()[i];
+  }
+    
+  //sendFrameAscii(texto);
+  digitalWrite(13, !digitalRead(13));
+  iamalive=uptime+(settings.token_period*60); // minutos
+    
+  if ( mbuffer[0] != 0x40 ) {
+    return;
+  }
+    
+  if ( ! checkCRC(mbuffer, mcounter-1) ) {
+        texto="XBee <==";
+        for (int i = 0; i < mcounter; i++) {
+              texto+=" ";
+              texto+=intToHex(rx.getData()[i]);
+        }
+        texto+=" => "; texto+=mcounter;
+        texto+=" CRC ERROR";
+        sendFrameAscii(texto);
+        return;
+  }
+    
+    
+  result=processInput(mbuffer);
+  if(result == 99) {
+    return;
+  }
+    
+  // respuesta
+  int temp=0;
+  byte message[10] = {};
+    
+  message[0]=0xff; // net
+  message[1]=0x9c; // tipo
+        
+  message[2] = (byte)result;
+  message[3] = (byte)settings.last_status;
+  message[4] = (byte)settings.enable_modem;
+  message[5] = (byte)settings.token_period;
+        
+  temp = (int)settings.frequency;
+  message[6] = temp >> 8 & 0xff;
+  message[7] = temp      & 0xff;
+        
+  // temperature
+  temp = (int)(GetTemp()*10);
+  message[8] = temp >> 8 & 0xff;
+  message[9] = temp      & 0xff;
+    
+    
+  XBeeSend(message, 10);
+}
+
+
+
+
+#endif

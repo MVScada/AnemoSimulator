@@ -1,14 +1,18 @@
 #include <EEPROM.h>
-#define CONFIG_VERSION "001"
+#define CONFIG_VERSION "003"
 #define CONFIG_START 32
 
 struct StoreStruct {
   boolean last_status;
   unsigned int frequency; // frecuencia en Hz
+  boolean enable_modem;
+  byte token_period; // Tiempo en minutos antes de que se reinicie por no recibir un "Estoy vivo"
   char version_of_program[4];
 } settings = {  
-  0,
+  FALSE,
   200,
+  FALSE,
+  60, //una hora
   CONFIG_VERSION
 };
 
@@ -30,7 +34,9 @@ void loadConfig() {
   }
 }
 
-void(* resetFunc) (void) = 0;
+//http://www.instructables.com/id/two-ways-to-reset-arduino-in-software/step2/using-just-software/
+// esto reinicia el ARDUINO
+void(* resetFunc) (void) = 0;//declare reset function at address 0
 
 void resetSettings() {
   int i=0;
@@ -61,8 +67,9 @@ void sendFrame(byte *message, int msize);
 void emergencia(int estado) {
     if (estado == 1) {
       pwmWrite(PWM_PIN, PWM_LENGHT);
+      SetPinFrequencySafe(PWM_PIN, settings.frequency);
       
-      digitalWrite(RELE1, HIGH);
+      digitalWrite(RELE1, RHIGH);
       digitalWrite(STATUS, HIGH);
       
       //guardar estado
@@ -76,9 +83,10 @@ void emergencia(int estado) {
     }
     else {
       //desactivar PWM
-      digitalWrite(RELE1, LOW);
+      digitalWrite(RELE1, RLOW);
       digitalWrite(STATUS, LOW);
       pwmWrite(PWM_PIN, 0);
+      SetPinFrequencySafe(PWM_PIN, 1);
 
       //guardar estado
       if(settings.last_status != 0) {
@@ -93,17 +101,30 @@ void emergencia(int estado) {
 }
 
 
-void timers() {
-  if( millis() < time ) {
-    time_overflow++;
+
+
+void loopAlive() {
+  if (iamalive==0) {
+    iamalive=uptime+(settings.token_period*60); // minutos
+    //iamalive=uptime+60;
+    return;
   }
-  time = millis();
-  uptime=(time_overflow*4294967) + time/1000;
-  
-  every1secs=0;
-  if ( (uptime-last1secs) >= 1 ) {
-    last1secs=uptime;
-    every1secs=1;
+  if( uptime > iamalive ){ //Si detectamos que no se han recibido paquetes "Estoy vivo" en el tiempo determinado se reinicia el arduino
+      texto="*** REINICIANDO ***"; sendFrameAscii(texto);
+      delay(200);
+      resetFunc();
+      return;    
+  }
+}
+
+void loopDisableRelay(){
+  if (rele_time==0) {
+    return;
+  }
+  if( uptime > rele_time ){ //si han pasado 10 segundos desactivamos botonera
+      texto="*** RELE2 OFF ***"; sendFrameAscii(texto);
+      digitalWrite(RELE2, RLOW);
+      rele_time=0;    
   }
 }
 

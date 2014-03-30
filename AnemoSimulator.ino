@@ -1,8 +1,12 @@
-
 #define DEBUG    1
 #define MAX      120
 #define TRUE     1
 #define FALSE    0
+#define ENABLE_XBEE 1
+#define RHIGH LOW //Reles de logica inversa
+#define RLOW HIGH //Reles de logica inversa
+//define RLOW LOW //Reles de logica directa
+//define RHIGH HIGH //Reles de logica directa
 
 //use pin 11 on the Mega instead, otherwise there is a frequency cap at 31 Hz
 #define PWM_PIN 9
@@ -13,20 +17,24 @@
 
 #define RELE1 4 // cambia de anemo a pulsos de arduino
 #define RELE2 5 // botonera pulsador
-#define RELE3 6 // botonera elevacion
-#define RELE4 7 // botonera giro
+
+#define XRXPIN 6
+#define XTXPIN 7
 
 
-#define STATUS 10     // led verde de la placa
+#define STATUS 10     // led rojo de la placa
 #define BTN_ENABLE 12 // pulsador activar manual
+#define RST_XBEEPIN 11 // conectado al pin 5 de la Xbee
 
 
 byte buffer[MAX], mbuffer[MAX];
 int counter=0, mcounter=0;
 String texto, txt;
-int result=0;
-boolean btn_status=1, blink_led=0, every1secs=0;
-unsigned long int uptime=0,time=0,time_overflow=0,last1secs=0,timetoreset1=0,timetoreset2=0;
+int result=0, time_overflow=0;
+unsigned long time=0, uptime=0; //time=miliseg uptime=seg
+unsigned long iamalive=0, rele_time=0;
+boolean xbee_started=FALSE;
+
 
  
 #if defined(ARDUINO) && ARDUINO >= 100
@@ -36,10 +44,18 @@ unsigned long int uptime=0,time=0,time_overflow=0,last1secs=0,timetoreset1=0,tim
 #endif
 
 
-
 #include <SoftwareSerial.h>
 SoftwareSerial mserial =  SoftwareSerial(RXPIN, TXPIN);
+SoftwareSerial debug   =  SoftwareSerial(XRXPIN, XTXPIN);
 
+#if ENABLE_XBEE
+  #include <XBee.h>
+  XBee xbee = XBee();
+  
+  XBeeAddress64 CoordinatorAddr64 = XBeeAddress64(0x00000000, 0x00000000);
+#endif
+
+#include <avr/wdt.h>
 #include <PWM.h>
 #include <EEPROM.h>
 #include "memoria.h"
@@ -48,39 +64,62 @@ SoftwareSerial mserial =  SoftwareSerial(RXPIN, TXPIN);
 
 
 void setup() {
+  wdt_disable();
   loadConfig(); // from EEPROM
-  // arrancar puerto serie
-  Serial.begin(9600);
-  
-  // software serial for modem
-  pinMode(RXPIN, INPUT);
-  pinMode(TXPIN, OUTPUT);
-  mserial.begin(9600);
   
   // salidas
   initPIN(RELE1);
   initPIN(RELE2);
-  initPIN(RELE3);
-  initPIN(RELE4);
-  
+  digitalWrite(RELE1, RLOW);
+  digitalWrite(RELE2, RLOW);
   initPIN(STATUS);
-  initPIN(13);
   
   pinMode(BTN_ENABLE, INPUT);
   digitalWrite(BTN_ENABLE, HIGH); // activar pullup
   
-  //initialize all timers except for 0, to save time keeping functions
-  InitTimersSafe(); 
+  // arrancar puerto serie
+#if ENABLE_XBEE
+/*
+   1  - + 3,3V
+   2  - DATA OUT => TX = pin 0/RX
+   3  - DATA IN  <= RX = pin 1/TX
+   5  - Reset negada
+   10 - GND
+*/
+  // reiniciar la Xbee al arranque
+  pinMode(RST_XBEEPIN, OUTPUT);
+  digitalWrite(RST_XBEEPIN, LOW); // Poner a 0
+  delay(300);
+  pinMode(RST_XBEEPIN, INPUT);
+  digitalWrite(RST_XBEEPIN, LOW); // activar pullup
+#endif  
 
-  //sets the frequency for the specified pin
-  bool success = SetPinFrequencySafe(PWM_PIN, settings.frequency);
-  
-  //if the pin frequency was set successfully, turn pin 13 on
-  if(success) {
-    digitalWrite(13, HIGH);
+  // software serial for modem
+  if(settings.enable_modem==TRUE){
+    pinMode(RXPIN, INPUT);
+    pinMode(TXPIN, OUTPUT);
+    mserial.begin(9600);
   }
   
+  // software serial for debug ASCII
+  pinMode(XRXPIN, INPUT);
+  pinMode(XTXPIN, OUTPUT);
+  debug.begin(9600);
   
+  //sets the frequency for the specified pin
+  InitTimersSafe(); 
+  bool success = SetPinFrequencySafe(PWM_PIN, 1);
+  
+  if(success) {
+    digitalWrite(STATUS, HIGH);
+    delay(150);
+    digitalWrite(STATUS, LOW);
+    delay(150);
+  }
+  
+  delay(500);
+  
+  // poner estado al ultimo conocido
   if(settings.last_status == 1) {
       emergencia(1);
   }
@@ -88,53 +127,52 @@ void setup() {
       emergencia(0);
   }
   
-  /*
-  texto=__DATE__; texto+=" "; texto+=__TIME__;
-  sendFrameAscii(texto);
-  mserial.print(texto);
-  */
-  delay(500);
+  // watchdog 4 segundos (bucle infinito el ardu se reinicia)
+  wdt_enable(WDTO_4S);
 }
 
 void loop() {
-  timers();
+  if( millis() < time ) {
+    time_overflow++;
+  }
+  time = millis();
+  uptime=(time_overflow*4294967) + time/1000;
   
-  btn_status=digitalRead(BTN_ENABLE);
-  if(btn_status == 0) {
+#if ENABLE_XBEE
+  if( xbee_started == FALSE && uptime > 5 ) {
+     Serial.begin(57600);
+     xbee.begin(Serial);
+     xbee_started=TRUE;
+     texto="***XBEE ON***"; sendFrameAscii(texto);
+  }
+#endif
+  
+  wdt_reset(); // avisar al WD que estamos vivos
+  
+  loopAlive();
+  loopDisableRelay();
+
+  if(settings.enable_modem==TRUE){
+    loopReadModem();
+  }
+
+#if ENABLE_XBEE
+  loopReadXBee();
+#endif
+
+
+  //btn_status=digitalRead(BTN_ENABLE);
+  if(digitalRead(BTN_ENABLE) == 0) {
     emergencia(!settings.last_status);
     // esperar un poco para evitar dobles pulsaciones
     delay(500);
   }
-  
-  loopReadSerial();
-  loopReadModem();
-  
-
-  if(timetoreset1 > 0 && uptime > timetoreset1) {
-    digitalWrite(RELE2, LOW);
-    timetoreset1=0;
-    digitalWrite(STATUS, LOW);
-    texto="***RESET1 END***";
-    sendFrameAscii(texto);
-  }
-
-
-  if(timetoreset1 !=0 && every1secs) {
-      blink_led=!(blink_led);
-      digitalWrite(STATUS, blink_led);
-  }
-  
-  if(timetoreset2 > 0 && uptime > timetoreset2) {
-    digitalWrite(RELE2, LOW);
-    digitalWrite(RELE3, LOW);
-    digitalWrite(RELE4, LOW);
-    timetoreset2=0;
-    texto="***RESET2 END***";
-    sendFrameAscii(texto);
-  }
  
   
-  delay(5);
+  delay(100);
 }
+
+
+
 
 

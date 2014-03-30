@@ -189,6 +189,24 @@ serial = serial.Serial("/dev/ttyUSB0", 9600, timeout=0.3)
 #serial = serial.Serial("/dev/ttyUSB0", 9600)
 print serial
 
+
+def processActions(txt):
+    if "|" in txt:
+        tmp=txt.split("|")
+        for a in tmp:
+            result=processActions(a)
+            print result
+        return result
+    if " " in txt:
+        tmp=txt.split(" ")
+        print tmp
+        freq=freq2hex( int(tmp[1]) )
+        print freq
+        result = txrx( int('0x' + tmp[0], 16), freq )
+    else:
+        result = txrx( int('0x' + txt, 16) )
+    return result
+
 sys.exit(0)
 
 modems  = sendRequest()
