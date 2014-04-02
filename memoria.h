@@ -1,5 +1,5 @@
 #include <EEPROM.h>
-#define CONFIG_VERSION "003"
+#define CONFIG_VERSION "004"
 #define CONFIG_START 32
 
 struct StoreStruct {
@@ -110,7 +110,7 @@ void loopAlive() {
     return;
   }
   if( uptime > iamalive ){ //Si detectamos que no se han recibido paquetes "Estoy vivo" en el tiempo determinado se reinicia el arduino
-      texto="*** REINICIANDO ***"; sendFrameAscii(texto);
+      texto="*** REINICIANDO iamalive uptime="; texto+=uptime; texto+=" iamalive="; texto+=iamalive; texto+=" ***"; sendFrameAscii(texto);
       delay(200);
       resetFunc();
       return;    

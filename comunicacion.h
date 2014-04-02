@@ -23,6 +23,8 @@ void sendFrame(byte *msg, int msize) {
 
 
 void sendFrameAscii(String txt) {
+  //debug.print( txt.length() );
+  //debug.print(" | ");
   debug.println(txt);
   delay(20);
 }
@@ -34,7 +36,7 @@ boolean checkCRC(byte *rcv, int last) {
     }
     
     if ( rcv[last] != crc ) {
-        texto="*** ERROR CRC, last="; texto+=last; texto+=" ***";sendFrameAscii(texto);
+        texto="*** ERROR CRC, size="; texto+=last; texto+=" LAST="; texto+=rcv[last]; texto+=" CRC="; texto+=crc; texto+=" ***";sendFrameAscii(texto);
         return FALSE;
     }
     return TRUE;
@@ -140,7 +142,7 @@ int processInput(byte *rcv) {
     }
     
     else if(rcv[2] == 0x39) { // reiniciar
-      texto="*** REINICIANDO ***"; sendFrameAscii(texto);
+      texto="*** REINICIANDO 0x39 ***"; sendFrameAscii(texto);
       delay(200);
       resetFunc();
       return 9;
@@ -177,10 +179,18 @@ int processInput(byte *rcv) {
       else{
         texto="*** IAMALIVE TOKEN TIME ES ";texto+=settings.token_period;texto+=" MINUTOS"; sendFrameAscii(texto);
       }
+      saveConfig();
       return 12;
     }
     
-    
+    else if(rcv[2] == 0x43) {
+      // borra la EEPROM
+      resetSettings();
+      delay(200);
+      // reiniciar
+      resetFunc();
+      return 99;
+    }
     
     
     
@@ -309,7 +319,8 @@ void loopReadXBee() {
   ZBRxResponse rx = ZBRxResponse();
   xbee.getResponse().getZBRxResponse(rx);
   mcounter=rx.getDataLength();
-  //texto="XBEE <== ";
+  texto="XBEE <== ("; texto+=mcounter; texto+=")";sendFrameAscii(texto);
+  if (mcounter >= MAX ) {return;}
   for (int i = 0; i < mcounter; i++) {
           //texto+=" ";
           //texto+=intToHex(rx.getData()[i]);

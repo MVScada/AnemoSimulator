@@ -31,7 +31,7 @@ byte buffer[MAX], mbuffer[MAX];
 int counter=0, mcounter=0;
 String texto, txt;
 int result=0, time_overflow=0;
-unsigned long time=0, uptime=0; //time=miliseg uptime=seg
+unsigned long atime=0, uptime=0; //time=miliseg uptime=seg
 unsigned long iamalive=0, rele_time=0;
 boolean xbee_started=FALSE;
 
@@ -61,9 +61,10 @@ SoftwareSerial debug   =  SoftwareSerial(XRXPIN, XTXPIN);
 #include "memoria.h"
 #include "comunicacion.h"
 
-
+//extern unsigned long timer0_millis;
 
 void setup() {
+  //timer0_millis = 4294950000UL; // debug para forzar overflow
   wdt_disable();
   loadConfig(); // from EEPROM
   
@@ -91,7 +92,7 @@ void setup() {
   digitalWrite(RST_XBEEPIN, LOW); // Poner a 0
   delay(300);
   pinMode(RST_XBEEPIN, INPUT);
-  digitalWrite(RST_XBEEPIN, LOW); // activar pullup
+  digitalWrite(RST_XBEEPIN, LOW);
 #endif  
 
   // software serial for modem
@@ -132,11 +133,16 @@ void setup() {
 }
 
 void loop() {
-  if( millis() < time ) {
+  //delay(300);
+  //texto="*** "; texto+=millis(); texto+=" ***"; sendFrameAscii(texto);
+  if( millis() < atime ) {
+    texto="***TIME OVERFLOW "; texto+=millis(); texto+=" "; texto+=atime; texto+=" ***"; sendFrameAscii(texto);
     time_overflow++;
   }
-  time = millis();
-  uptime=(time_overflow*4294967) + time/1000;
+  atime = millis();
+  uptime=(time_overflow*4294967) + atime/1000;
+  
+  //texto="*** uptime="; texto+=uptime; texto+="  iamalive="; texto+=iamalive; texto+=" ***"; sendFrameAscii(texto);
   
 #if ENABLE_XBEE
   if( xbee_started == FALSE && uptime > 5 ) {
